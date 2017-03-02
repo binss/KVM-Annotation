@@ -456,6 +456,7 @@ struct kvm_vcpu_hv {
 	DECLARE_BITMAP(stimer_pending_bitmap, HV_SYNIC_STIMER_COUNT);
 };
 
+// 平台相关的vcpu结构
 struct kvm_vcpu_arch {
 	/*
 	 * rip and regs accesses must go through
@@ -465,6 +466,7 @@ struct kvm_vcpu_arch {
 	u32 regs_avail;
 	u32 regs_dirty;
 
+	// 缓存真正的CPU值？
 	unsigned long cr0;
 	unsigned long cr0_guest_owned_bits;
 	unsigned long cr2;
@@ -493,6 +495,7 @@ struct kvm_vcpu_arch {
 	 * the paging mode of the l1 guest. This context is always used to
 	 * handle faults.
 	 */
+	// 内存管理，包括操作函数
 	struct kvm_mmu mmu;
 
 	/*
@@ -547,7 +550,7 @@ struct kvm_vcpu_arch {
 	int maxphyaddr;
 
 	/* emulate context */
-
+	// KVM 软件模拟(无VMX下使用)
 	struct x86_emulate_ctxt emulate_ctxt;
 	bool emulate_regs_need_sync_to_vcpu;
 	bool emulate_regs_need_sync_from_vcpu;
@@ -789,6 +792,7 @@ struct kvm_arch {
 	bool x2apic_broadcast_quirk_disabled;
 };
 
+// 页表、MMU等运行时状态信息
 struct kvm_vm_stat {
 	u32 mmu_shadow_zapped;
 	u32 mmu_pte_write;

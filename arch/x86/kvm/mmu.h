@@ -85,11 +85,12 @@ static inline unsigned int kvm_mmu_available_pages(struct kvm *kvm)
 	return 0;
 }
 
+// 重新加载页表
 static inline int kvm_mmu_reload(struct kvm_vcpu *vcpu)
 {
 	if (likely(vcpu->arch.mmu.root_hpa != INVALID_PAGE))
 		return 0;
-
+	// 如果未分配，分配影子页表并将CR3指向之
 	return kvm_mmu_load(vcpu);
 }
 

@@ -204,15 +204,17 @@ struct kvm_mmio_fragment {
 	unsigned len;
 };
 
+
+// KVM vCPU结构，表示一个vCPU
 struct kvm_vcpu {
-	struct kvm *kvm;
+	struct kvm *kvm;	// 归属VM
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	struct preempt_notifier preempt_notifier;
 #endif
-	int cpu;
+	int cpu;			// 运行当前VCPU的PCPU编号
 	int vcpu_id;
 	int srcu_idx;
-	int mode;
+	int mode;			// vcpu当前处于的模式，如OUTSIDE_GUEST_MODE 或 IN_GUEST_MODE
 	unsigned long requests;
 	unsigned long guest_debug;
 
@@ -220,7 +222,7 @@ struct kvm_vcpu {
 	struct list_head blocked_vcpu_list;
 
 	struct mutex mutex;
-	struct kvm_run *run;
+	struct kvm_run *run;	// 运行时状态，保存类似VMExit的信息
 
 	int fpu_active;
 	int guest_fpu_loaded, guest_xcr0_loaded;
@@ -264,7 +266,7 @@ struct kvm_vcpu {
 	} spin_loop;
 #endif
 	bool preempted;
-	struct kvm_vcpu_arch arch;
+	struct kvm_vcpu_arch arch;		// 当前VCPU虚拟的架构
 };
 
 static inline int kvm_vcpu_exiting_guest_mode(struct kvm_vcpu *vcpu)
@@ -371,14 +373,15 @@ struct kvm_memslots {
 	int used_slots;
 };
 
+// kvm结构，表示一台VM
 struct kvm {
 	spinlock_t mmu_lock;
 	struct mutex slots_lock;
 	struct mm_struct *mm; /* userspace tied to this vm */
-	struct kvm_memslots *memslots[KVM_ADDRESS_SPACE_NUM];
+	struct kvm_memslots *memslots[KVM_ADDRESS_SPACE_NUM];		// qemu模拟的内存条模型
 	struct srcu_struct srcu;
 	struct srcu_struct irq_srcu;
-	struct kvm_vcpu *vcpus[KVM_MAX_VCPUS];
+	struct kvm_vcpu *vcpus[KVM_MAX_VCPUS];	 // vCPU数组
 
 	/*
 	 * created_vcpus is protected by kvm->lock, and is incremented
@@ -389,7 +392,7 @@ struct kvm {
 	atomic_t online_vcpus;
 	int created_vcpus;
 	int last_boosted_vcpu;
-	struct list_head vm_list;
+	struct list_head vm_list;		// 宿主机上VM管理链表
 	struct mutex lock;
 	struct kvm_io_bus *buses[KVM_NR_BUSES];
 #ifdef CONFIG_HAVE_KVM_EVENTFD
@@ -401,8 +404,8 @@ struct kvm {
 	} irqfds;
 	struct list_head ioeventfds;
 #endif
-	struct kvm_vm_stat stat;
-	struct kvm_arch arch;
+	struct kvm_vm_stat stat;				// 页表、MMU等运行时状态信息
+	struct kvm_arch arch;					// 平台相关结构
 	atomic_t users_count;
 #ifdef KVM_COALESCED_MMIO_PAGE_OFFSET
 	struct kvm_coalesced_mmio_ring *coalesced_mmio_ring;
@@ -547,6 +550,7 @@ static inline struct kvm_memslots *kvm_vcpu_memslots(struct kvm_vcpu *vcpu)
 	return __kvm_memslots(vcpu->kvm, as_id);
 }
 
+// 将qemu的内存槽号转换到kvm下的内存槽号
 static inline struct kvm_memory_slot *
 id_to_memslot(struct kvm_memslots *slots, int id)
 {

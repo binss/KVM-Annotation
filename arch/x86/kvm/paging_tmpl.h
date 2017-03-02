@@ -707,6 +707,7 @@ FNAME(is_self_change_mapping)(struct kvm_vcpu *vcpu,
  *  Returns: 1 if we need to emulate the instruction, 0 otherwise, or
  *           a negative value on error.
  */
+// 处理缺页
 static int FNAME(page_fault)(struct kvm_vcpu *vcpu, gva_t addr, u32 error_code,
 			     bool prefault)
 {
@@ -735,13 +736,16 @@ static int FNAME(page_fault)(struct kvm_vcpu *vcpu, gva_t addr, u32 error_code,
 	/*
 	 * Look up the guest pte for the faulting address.
 	 */
+	// 查询guest的页表
 	r = FNAME(walk_addr)(&walker, vcpu, addr, error_code);
 
 	/*
 	 * The page is not mapped by the guest.  Let the guest handle it.
 	 */
+	// 如果页表中没有GVA -> GPA，让Guest OS去处理
 	if (!r) {
 		pgprintk("%s: guest page fault\n", __func__);
+		// 注入缺页异常
 		if (!prefault)
 			inject_page_fault(vcpu, &walker.fault);
 
@@ -806,6 +810,8 @@ static int FNAME(page_fault)(struct kvm_vcpu *vcpu, gva_t addr, u32 error_code,
 	make_mmu_pages_available(vcpu);
 	if (!force_pt_level)
 		transparent_hugepage_adjust(vcpu, &walker.gfn, &pfn, &level);
+
+	// 如果影子页表没有GVA -> HPA，进行填充
 	r = FNAME(fetch)(vcpu, addr, &walker, write_fault,
 			 level, pfn, map_writable, prefault);
 	++vcpu->stat.pf_fixed;

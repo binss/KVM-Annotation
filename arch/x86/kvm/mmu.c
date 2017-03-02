@@ -1372,6 +1372,7 @@ bool kvm_mmu_slot_gfn_write_protect(struct kvm *kvm,
 	return write_protected;
 }
 
+// 设置写保护
 static bool rmap_write_protect(struct kvm_vcpu *vcpu, u64 gfn)
 {
 	struct kvm_memory_slot *slot;
@@ -2138,6 +2139,7 @@ static struct kvm_mmu_page *kvm_mmu_get_page(struct kvm_vcpu *vcpu,
 		quadrant &= (1 << ((PT32_PT_BITS - PT64_PT_BITS) * level)) - 1;
 		role.quadrant = quadrant;
 	}
+	// 根据hash索引
 	for_each_gfn_valid_sp(vcpu->kvm, sp, gfn) {
 		if (!need_sync && sp->unsync)
 			need_sync = true;
@@ -2170,6 +2172,7 @@ static struct kvm_mmu_page *kvm_mmu_get_page(struct kvm_vcpu *vcpu,
 
 	sp->gfn = gfn;
 	sp->role = role;
+	// 新的mmu page加入hash索引，所以前面的for循环中才能知道gfn对应的mmu有没有被分配
 	hlist_add_head(&sp->hash_link,
 		&vcpu->kvm->arch.mmu_page_hash[kvm_page_table_hashfn(gfn)]);
 	if (!direct) {
@@ -2194,11 +2197,15 @@ static struct kvm_mmu_page *kvm_mmu_get_page(struct kvm_vcpu *vcpu,
 	return sp;
 }
 
+// 初始化kvm_shadow_walk_iterator
 static void shadow_walk_init(struct kvm_shadow_walk_iterator *iterator,
 			     struct kvm_vcpu *vcpu, u64 addr)
 {
+	// 设置要索引的地址(gpa)
 	iterator->addr = addr;
+	// eptp
 	iterator->shadow_addr = vcpu->arch.mmu.root_hpa;
+	// 设置页表级数
 	iterator->level = vcpu->arch.mmu.shadow_root_level;
 
 	if (iterator->level == PT64_ROOT_LEVEL &&
@@ -2216,6 +2223,7 @@ static void shadow_walk_init(struct kvm_shadow_walk_iterator *iterator,
 	}
 }
 
+// 查询当前页表，设置下一级EPT页表的基地址或最终的物理内存单元地址
 static bool shadow_walk_okay(struct kvm_shadow_walk_iterator *iterator)
 {
 	if (iterator->level < PT_PAGE_TABLE_LEVEL)
@@ -2226,9 +2234,11 @@ static bool shadow_walk_okay(struct kvm_shadow_walk_iterator *iterator)
 	return true;
 }
 
+// 进入下一级EPT页表
 static void __shadow_walk_next(struct kvm_shadow_walk_iterator *iterator,
 			       u64 spte)
 {
+	// 最后一级，返回
 	if (is_last_spte(spte, iterator->level)) {
 		iterator->level = 0;
 		return;
@@ -2238,6 +2248,7 @@ static void __shadow_walk_next(struct kvm_shadow_walk_iterator *iterator,
 	--iterator->level;
 }
 
+// 进入下一级EPT页表
 static void shadow_walk_next(struct kvm_shadow_walk_iterator *iterator)
 {
 	return __shadow_walk_next(iterator, *iterator->sptep);
@@ -2609,6 +2620,7 @@ static bool mmu_set_spte(struct kvm_vcpu *vcpu, u64 *sptep, unsigned pte_access,
 	pgprintk("%s: spte %llx write_fault %d gfn %llx\n", __func__,
 		 *sptep, write_fault, gfn);
 
+	// pte已存在，进行更新
 	if (is_shadow_present_pte(*sptep)) {
 		/*
 		 * If we overwrite a PTE page pointer with a 2MB PMD, unlink
@@ -2631,6 +2643,7 @@ static bool mmu_set_spte(struct kvm_vcpu *vcpu, u64 *sptep, unsigned pte_access,
 			was_rmapped = 1;
 	}
 
+	// 设置页表项后刷新TLB
 	if (set_spte(vcpu, sptep, pte_access, level, gfn, pfn, speculative,
 	      true, host_writable)) {
 		if (write_fault)
@@ -2754,8 +2767,14 @@ static int __direct_map(struct kvm_vcpu *vcpu, int write, int map_writable,
 	if (!VALID_PAGE(vcpu->arch.mmu.root_hpa))
 		return 0;
 
+	// 宏，遍历每一级EPT页表(共四级)
+	// shadow_walk_init：初始化kvm_shadow_walk_iterator，设置eptp和level等
+	// shadow_walk_okay：查询当前页表，设置下一级EPT页表的基地址或最终的物理内存单元地址
+	// shadow_walk_next：进入下一级EPT页表
 	for_each_shadow_entry(vcpu, (u64)gfn << PAGE_SHIFT, iterator) {
+		// 到达要添加表项的level(通常是最后一级，但考虑兼容hugepage下的level)
 		if (iterator.level == level) {
+			// 添加GFN到PFN的表项(pte)
 			emulate = mmu_set_spte(vcpu, iterator.sptep, ACC_ALL,
 					       write, level, gfn, pfn, prefault,
 					       map_writable);
@@ -2763,16 +2782,18 @@ static int __direct_map(struct kvm_vcpu *vcpu, int write, int map_writable,
 			++vcpu->stat.pf_fixed;
 			break;
 		}
-
+		// 中间level，设置下一级物理地址
 		drop_large_spte(vcpu, iterator.sptep);
+		// page不存在(缺页)
 		if (!is_shadow_present_pte(*iterator.sptep)) {
 			u64 base_addr = iterator.addr;
-
+			// 获取指向的具体mmu page entry的index
 			base_addr &= PT64_LVL_ADDR_MASK(iterator.level);
 			pseudo_gfn = base_addr >> PAGE_SHIFT;
+			// 分配一个pte(即kvm_mmu_page)
 			sp = kvm_mmu_get_page(vcpu, pseudo_gfn, iterator.addr,
 					      iterator.level - 1, 1, ACC_ALL);
-
+			// 将新分配的pte地址写入到上一级中
 			link_shadow_page(vcpu, iterator.sptep, sp);
 		}
 	}
@@ -3504,8 +3525,10 @@ static bool try_async_pf(struct kvm_vcpu *vcpu, bool prefault, gfn_t gfn,
 	struct kvm_memory_slot *slot;
 	bool async;
 
+	// 找到gfn对应的slot
 	slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
 	async = false;
+	// 异步计算pfn
 	*pfn = __gfn_to_pfn_memslot(slot, gfn, false, &async, write, writable);
 	if (!async)
 		return false; /* *pfn has correct page already */
@@ -3534,6 +3557,7 @@ check_hugepage_cache_consistency(struct kvm_vcpu *vcpu, gfn_t gfn, int level)
 	return kvm_mtrr_check_gfn_range_consistency(vcpu, gfn, page_num);
 }
 
+// EPT缺页时调用
 static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 			  bool prefault)
 {
@@ -3551,10 +3575,11 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 	if (page_fault_handle_page_track(vcpu, error_code, gfn))
 		return 1;
 
+	// 填充kvm mmu专用的slab
 	r = mmu_topup_memory_caches(vcpu);
 	if (r)
 		return r;
-
+	// 获取gfn使用的level，即hugepage的问题
 	force_pt_level = !check_hugepage_cache_consistency(vcpu, gfn,
 							   PT_DIRECTORY_LEVEL);
 	level = mapping_level(vcpu, gfn, &force_pt_level);
@@ -3565,12 +3590,16 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 		gfn &= ~(KVM_PAGES_PER_HPAGE(level) - 1);
 	}
 
+	// 快速处理一个简单的page fault，即present同时有写权限的非mmio page fault
+	// 参考page_fault_can_be_fast函数，一部分处理没有写权限的page fault，一部分处理 TLB lazy
+	// 将pte获取的写权限
 	if (fast_page_fault(vcpu, gpa, level, error_code))
 		return 0;
 
 	mmu_seq = vcpu->kvm->mmu_notifier_seq;
 	smp_rmb();
 
+	// gfn to pfn
 	if (try_async_pf(vcpu, prefault, gfn, gpa, &pfn, write, &map_writable))
 		return 0;
 
@@ -3583,6 +3612,7 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 	make_mmu_pages_available(vcpu);
 	if (likely(!force_pt_level))
 		transparent_hugepage_adjust(vcpu, &gfn, &pfn, &level);
+	// 设置EPT项
 	r = __direct_map(vcpu, write, map_writable, level, gfn, pfn, prefault);
 	spin_unlock(&vcpu->kvm->mmu_lock);
 
@@ -4072,8 +4102,10 @@ static void paging32E_init_context(struct kvm_vcpu *vcpu,
 	paging64_init_context_common(vcpu, context, PT32E_ROOT_LEVEL);
 }
 
+
 static void init_kvm_tdp_mmu(struct kvm_vcpu *vcpu)
 {
+	// 填充kvm_mmu
 	struct kvm_mmu *context = &vcpu->arch.mmu;
 
 	context->base_role.word = 0;
@@ -4090,6 +4122,7 @@ static void init_kvm_tdp_mmu(struct kvm_vcpu *vcpu)
 	context->get_pdptr = kvm_pdptr_read;
 	context->inject_page_fault = kvm_inject_page_fault;
 
+	// gva_to_gpa是gva到gpa的转换函数
 	if (!is_paging(vcpu)) {
 		context->nx = false;
 		context->gva_to_gpa = nonpaging_gva_to_gpa;
@@ -4228,6 +4261,8 @@ static void init_kvm_mmu(struct kvm_vcpu *vcpu)
 {
 	if (mmu_is_nested(vcpu))
 		init_kvm_nested_mmu(vcpu);
+	// tdp(two dimensional paging)，即是否启用EPT
+	// 如果不启用，使用软件模拟
 	else if (tdp_enabled)
 		init_kvm_tdp_mmu(vcpu);
 	else
@@ -4241,10 +4276,12 @@ void kvm_mmu_reset_context(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_GPL(kvm_mmu_reset_context);
 
+// 加载页表
 int kvm_mmu_load(struct kvm_vcpu *vcpu)
 {
 	int r;
 
+	// 创建页表
 	r = mmu_topup_memory_caches(vcpu);
 	if (r)
 		goto out;
@@ -4253,6 +4290,8 @@ int kvm_mmu_load(struct kvm_vcpu *vcpu)
 	if (r)
 		goto out;
 	/* set_cr3() should ensure TLB has been flushed */
+	// vmx_set_cr3
+	// 设置cr3(root_hpa)到VMCS中
 	vcpu->arch.mmu.set_cr3(vcpu, vcpu->arch.mmu.root_hpa);
 out:
 	return r;

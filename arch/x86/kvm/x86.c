@@ -499,6 +499,7 @@ EXPORT_SYMBOL_GPL(kvm_require_dr);
  * running guest. The difference to kvm_vcpu_read_guest_page is that this function
  * can read from guest physical or from the guest's guest physical memory.
  */
+// 读取gva对应的hpa
 int kvm_read_guest_page_mmu(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 			    gfn_t ngfn, void *data, int offset, int len,
 			    u32 access)
@@ -2528,6 +2529,7 @@ out:
 	return r;
 }
 
+// 处理extension查询
 int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 {
 	int r;
@@ -2634,6 +2636,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 
 }
 
+// 处理依赖于x86架构的指令
 long kvm_arch_dev_ioctl(struct file *filp,
 			unsigned int ioctl, unsigned long arg)
 {
@@ -5836,6 +5839,7 @@ static struct notifier_block pvclock_gtod_notifier = {
 };
 #endif
 
+// 平台相关初始化
 int kvm_arch_init(void *opaque)
 {
 	int r;
@@ -5847,6 +5851,7 @@ int kvm_arch_init(void *opaque)
 		goto out;
 	}
 
+	// 检查硬件支持状况
 	if (!ops->cpu_has_kvm_support()) {
 		printk(KERN_ERR "kvm: no hardware support\n");
 		r = -EOPNOTSUPP;
@@ -6462,6 +6467,7 @@ void kvm_arch_mmu_notifier_invalidate_page(struct kvm *kvm,
  * exiting to the userspace.  Otherwise, the value will be returned to the
  * userspace.
  */
+// 进入guest mode
 static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 {
 	int r;
@@ -6471,6 +6477,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	bool req_immediate_exit = false;
 
+	// 如果vcpu有待处理请求，处理之
 	if (vcpu->requests) {
 		if (kvm_check_request(KVM_REQ_MMU_RELOAD, vcpu))
 			kvm_mmu_unload(vcpu);
@@ -6576,6 +6583,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 				kvm_lapic_find_highest_irr(vcpu));
 	}
 
+	//
 	if (kvm_check_request(KVM_REQ_EVENT, vcpu) || req_int_win) {
 		kvm_apic_accept_events(vcpu);
 		if (vcpu->arch.mp_state == KVM_MP_STATE_INIT_RECEIVED) {
@@ -6583,6 +6591,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 			goto out;
 		}
 
+		// 注入中断
 		if (inject_pending_event(vcpu, req_int_win) != 0)
 			req_immediate_exit = true;
 		else {
@@ -6609,6 +6618,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		}
 	}
 
+	// 加载guest的页表
 	r = kvm_mmu_reload(vcpu);
 	if (unlikely(r)) {
 		goto cancel_injection;
@@ -6666,6 +6676,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		vcpu->arch.switch_db_regs &= ~KVM_DEBUGREG_RELOAD;
 	}
 
+	// 运行，调用vmx_vcpu_run
 	kvm_x86_ops->run(vcpu);
 
 	/*
@@ -6726,6 +6737,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	if (vcpu->arch.apic_attention)
 		kvm_lapic_sync_from_vapic(vcpu);
 
+	// 处理VMExit
 	r = kvm_x86_ops->handle_exit(vcpu);
 	return r;
 
@@ -6776,6 +6788,7 @@ static inline bool kvm_vcpu_running(struct kvm_vcpu *vcpu)
 		!vcpu->arch.apf.halted);
 }
 
+// 运行vm
 static int vcpu_run(struct kvm_vcpu *vcpu)
 {
 	int r;
@@ -6785,6 +6798,7 @@ static int vcpu_run(struct kvm_vcpu *vcpu)
 
 	for (;;) {
 		if (kvm_vcpu_running(vcpu)) {
+			// 进入guest mode
 			r = vcpu_enter_guest(vcpu);
 		} else {
 			r = vcpu_block(kvm, vcpu);
@@ -6907,6 +6921,7 @@ static int complete_emulated_mmio(struct kvm_vcpu *vcpu)
 }
 
 
+// 运行vm
 int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu, struct kvm_run *kvm_run)
 {
 	struct fpu *fpu = &current->thread.fpu;
@@ -6943,6 +6958,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu, struct kvm_run *kvm_run)
 	} else
 		WARN_ON(vcpu->arch.pio.count || vcpu->mmio_needed);
 
+	// 架构运行vm
 	r = vcpu_run(vcpu);
 
 out:
@@ -7380,6 +7396,7 @@ void kvm_arch_vcpu_free(struct kvm_vcpu *vcpu)
 	free_cpumask_var(wbinvd_dirty_mask);
 }
 
+// 根据架构创建vcpu
 struct kvm_vcpu *kvm_arch_vcpu_create(struct kvm *kvm,
 						unsigned int id)
 {
@@ -7390,16 +7407,20 @@ struct kvm_vcpu *kvm_arch_vcpu_create(struct kvm *kvm,
 		"kvm: SMP vm created on host with unstable TSC; "
 		"guest TSC will not be reliable\n");
 
+	// 根据硬件创建vcpu，调用vmx_create_vcpu
 	vcpu = kvm_x86_ops->vcpu_create(kvm, id);
 
 	return vcpu;
 }
 
+// 根据架构设置vcpu
 int kvm_arch_vcpu_setup(struct kvm_vcpu *vcpu)
 {
 	int r;
 
 	kvm_vcpu_mtrr_init(vcpu);
+	// kvm_main.c
+	// 切换vcpu?
 	r = vcpu_load(vcpu);
 	if (r)
 		return r;
@@ -7409,13 +7430,15 @@ int kvm_arch_vcpu_setup(struct kvm_vcpu *vcpu)
 	return r;
 }
 
+//
 void kvm_arch_vcpu_postcreate(struct kvm_vcpu *vcpu)
 {
 	struct msr_data msr;
 	struct kvm *kvm = vcpu->kvm;
-
+	// 重新vcpu_load
 	if (vcpu_load(vcpu))
 		return;
+	// 写msr，tsc
 	msr.data = 0x0;
 	msr.index = MSR_IA32_TSC;
 	msr.host_initiated = true;
@@ -7592,10 +7615,12 @@ void kvm_arch_hardware_disable(void)
 	drop_user_return_notifiers();
 }
 
+// 特定架构硬件初始化
 int kvm_arch_hardware_setup(void)
 {
 	int r;
 
+	// 设置VMCS
 	r = kvm_x86_ops->hardware_setup();
 	if (r != 0)
 		return r;
@@ -7932,11 +7957,12 @@ void kvm_arch_free_memslot(struct kvm *kvm, struct kvm_memory_slot *free,
 	kvm_page_track_free_memslot(free, dont);
 }
 
+// 制作软件页表
 int kvm_arch_create_memslot(struct kvm *kvm, struct kvm_memory_slot *slot,
 			    unsigned long npages)
 {
 	int i;
-
+	// 分页的级数(3)
 	for (i = 0; i < KVM_NR_PAGE_SIZES; ++i) {
 		struct kvm_lpage_info *linfo;
 		unsigned long ugfn;
