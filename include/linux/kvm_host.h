@@ -207,12 +207,12 @@ struct kvm_mmio_fragment {
 
 // KVM vCPU结构，表示一个vCPU
 struct kvm_vcpu {
-	struct kvm *kvm;	// 归属VM
+	struct kvm *kvm;	// 指向vCPU属于的那个VM结构，是一个相互指向的关系
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	struct preempt_notifier preempt_notifier;
 #endif
-	int cpu;			// 运行当前VCPU的PCPU编号
-	int vcpu_id;
+	int cpu;			// 运行当前vCPU的pCPU id
+	int vcpu_id;		// vCPU id
 	int srcu_idx;
 	int mode;			// vcpu当前处于的模式，如OUTSIDE_GUEST_MODE 或 IN_GUEST_MODE
 	unsigned long requests;
@@ -222,7 +222,7 @@ struct kvm_vcpu {
 	struct list_head blocked_vcpu_list;
 
 	struct mutex mutex;
-	struct kvm_run *run;	// 运行时状态，保存类似VMExit的信息
+	struct kvm_run *run;	// 运行时参数，保存寄存器信息、内存信息、虚拟机状态等信息 VMEXIT
 
 	int fpu_active;
 	int guest_fpu_loaded, guest_xcr0_loaded;
@@ -266,7 +266,7 @@ struct kvm_vcpu {
 	} spin_loop;
 #endif
 	bool preempted;
-	struct kvm_vcpu_arch arch;		// 当前VCPU虚拟的架构
+	struct kvm_vcpu_arch arch;		// 平台特定的vcpu结构，如x86平台特有的
 };
 
 static inline int kvm_vcpu_exiting_guest_mode(struct kvm_vcpu *vcpu)
@@ -368,7 +368,7 @@ struct kvm_memslots {
 	u64 generation;
 	struct kvm_memory_slot memslots[KVM_MEM_SLOTS_NUM];
 	/* The mapping table from slot id to the index in memslots[]. */
-	short id_to_index[KVM_MEM_SLOTS_NUM];
+	short id_to_index[KVM_MEM_SLOTS_NUM];	// memslots不重排，因此需要维护id到memslots索引的映射
 	atomic_t lru_slot;
 	int used_slots;
 };
@@ -377,7 +377,7 @@ struct kvm_memslots {
 struct kvm {
 	spinlock_t mmu_lock;
 	struct mutex slots_lock;
-	struct mm_struct *mm; /* userspace tied to this vm */
+	struct mm_struct *mm; /* userspace tied to this vm */		// 使用的用户空间描述结构
 	struct kvm_memslots *memslots[KVM_ADDRESS_SPACE_NUM];		// qemu模拟的内存条模型
 	struct srcu_struct srcu;
 	struct srcu_struct irq_srcu;

@@ -174,12 +174,11 @@ extern const ulong vmx_return;
 #define NR_AUTOLOAD_MSRS 8
 #define VMCS02_POOL_SIZE 1
 
-// Virtual Machine Control Structure
-// 控制结构
+// Virtual Machine Control Structure region
 struct vmcs {
-	u32 revision_id;
-	u32 abort;
-	char data[0];
+	u32 revision_id;	// (30:0)版本号, (31:)指示是否shadow-VMCS
+	u32 abort;			// 非0表示有abort
+	char data[0];		// 指向相关状态和信息
 };
 
 /*
@@ -187,8 +186,9 @@ struct vmcs {
  * remember whether it was VMLAUNCHed, and maintain a linked list of all VMCSs
  * loaded on this CPU (so we can clear them if the CPU goes down).
  */
+// vCPU加载的VMCS
 struct loaded_vmcs {
-	struct vmcs *vmcs;	// VCPU对应的VMCS
+	struct vmcs *vmcs;	// 保存当前VMCS
 	int cpu;			// 上一次运行的PCPU编号
 	int launched;
 	struct list_head loaded_vmcss_on_cpu_link;
@@ -214,6 +214,7 @@ struct shared_msr_entry {
  * If there are changes in this struct, VMCS12_REVISION must be changed.
  */
 typedef u64 natural_width;
+// 二层嵌套下，L1 VMM维护的VMCS
 struct __packed vmcs12 {
 	/* According to the Intel spec, a VMCS region must start with the
 	 * following two fields. Then follow implementation-specific data.
@@ -2215,15 +2216,16 @@ static void decache_tsc_multiplier(struct vcpu_vmx *vmx)
 //
 static void vmx_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 {
-	// 切换到指定cpu
+	// 获取包含vcpu的那个vcpu_vmx
 	struct vcpu_vmx *vmx = to_vmx(vcpu);
 	u64 phys_addr = __pa(per_cpu(vmxarea, cpu));
+	// vcpu是否已经在该pcpu上
 	bool already_loaded = vmx->loaded_vmcs->cpu == cpu;
 
-	// 进入到vmx模式，将loaded_vmcs的vmcs和当前cpu的vmcs绑定到一起
 	if (!vmm_exclusive)
 		kvm_cpu_vmxon(phys_addr);
 	else if (!already_loaded)
+		// 如果先前不在当前cpu上，那么要通过smp_call刷掉先前cpu的current-VMCS
 		loaded_vmcs_clear(vmx->loaded_vmcs);
 
 	if (!already_loaded) {
@@ -2237,17 +2239,21 @@ static void vmx_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 		 */
 		smp_rmb();
 
+		// 把vcpu中的VMCS链表(上一个cpu用过的VMCS)加到当前cpu的VMCS链表中，由它负责管理
 		list_add(&vmx->loaded_vmcs->loaded_vmcss_on_cpu_link,
 			 &per_cpu(loaded_vmcss_on_cpu, cpu));
 		crash_enable_local_vmclear(cpu);
 		local_irq_enable();
 	}
 
+	// 设置cpu的current_vmcs
 	if (per_cpu(current_vmcs, cpu) != vmx->loaded_vmcs->vmcs) {
 		per_cpu(current_vmcs, cpu) = vmx->loaded_vmcs->vmcs;
+		// 使用VMPTRLD加载VMCS
 		vmcs_load(vmx->loaded_vmcs->vmcs);
 	}
 
+	// 设置VMCS内容
 	if (!already_loaded) {
 		struct desc_ptr *gdt = this_cpu_ptr(&host_gdt);
 		unsigned long sysenter_esp;
@@ -2258,12 +2264,15 @@ static void vmx_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 		 * Linux uses per-cpu TSS and GDT, so set these when switching
 		 * processors.
 		 */
+		// 将任务TSS段选择符(TR寄存器)和GDT基址(GDTR寄存器)内容写到VMCS中
 		vmcs_writel(HOST_TR_BASE, kvm_read_tr_base()); /* 22.2.4 */
 		vmcs_writel(HOST_GDTR_BASE, gdt->address);   /* 22.2.4 */
 
+		// 将host的内核栈指针写到VMCS中
 		rdmsrl(MSR_IA32_SYSENTER_ESP, sysenter_esp);
 		vmcs_writel(HOST_IA32_SYSENTER_ESP, sysenter_esp); /* 22.2.3 */
 
+		// 设置为当前cpu
 		vmx->loaded_vmcs->cpu = cpu;
 	}
 
@@ -2278,6 +2287,7 @@ static void vmx_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 
 static void vmx_vcpu_pi_put(struct kvm_vcpu *vcpu)
 {
+	// 读取vcp运行环境中的posted interrupt descriptor
 	struct pi_desc *pi_desc = vcpu_to_pi_desc(vcpu);
 
 	if (!kvm_arch_has_assigned_device(vcpu->kvm) ||
@@ -2286,15 +2296,19 @@ static void vmx_vcpu_pi_put(struct kvm_vcpu *vcpu)
 		return;
 
 	/* Set SN when the vCPU is preempted */
+	// 如果可抢占，设置POSTED_INTR_SN bit
 	if (vcpu->preempted)
 		pi_set_sn(pi_desc);
 }
 
 static void vmx_vcpu_put(struct kvm_vcpu *vcpu)
 {
+	// 设置posted interrupt descriptor
+	// 用于设置准备给guest发送的中断向量号
 	vmx_vcpu_pi_put(vcpu);
 
 	__vmx_load_host_state(to_vmx(vcpu));
+	// 严格模式下在清理完VMCS后立刻退出VMX模式
 	if (!vmm_exclusive) {
 		__loaded_vmcs_clear(to_vmx(vcpu)->loaded_vmcs);
 		vcpu->cpu = -1;
@@ -3254,6 +3268,7 @@ static int hardware_enable(void)
 	 * is no problem to enable the vmclear operation
 	 * for the loaded_vmcss_on_cpu list is empty!
 	 */
+	// 清理bitmap，允许VMCLEAR操作
 	crash_enable_local_vmclear(cpu);
 
 	rdmsrl(MSR_IA32_FEATURE_CONTROL, old);
@@ -3263,12 +3278,16 @@ static int hardware_enable(void)
 	if (tboot_enabled())
 		test_bits |= FEATURE_CONTROL_VMXON_ENABLED_INSIDE_SMX;
 
+	// 判断MSR_IA32_FEATURE_CONTROL是否满足，不满足则将条件写入到寄存器内???
 	if ((old & test_bits) != test_bits) {
 		/* enable and lock */
 		wrmsrl(MSR_IA32_FEATURE_CONTROL, old | test_bits);
 	}
+
+	// 置位X86_CR4_VMXE，enables VMX
 	cr4_set_bits(X86_CR4_VMXE);
 
+	// 非严格模式，提前进入VMX mode
 	if (vmm_exclusive) {
 		kvm_cpu_vmxon(phys_addr);
 		ept_sync_global();
@@ -3336,7 +3355,7 @@ static __init bool allow_1_setting(u32 msr, u32 ctl)
 	return vmx_msr_high & ctl;
 }
 
-// 设置vmcs_conf
+// 初始化vmcs_config，该结构在创建VMCS时经常被使用
 static __init int setup_vmcs_config(struct vmcs_config *vmcs_conf)
 {
 	u32 vmx_msr_low, vmx_msr_high;
@@ -3526,12 +3545,14 @@ static struct vmcs *alloc_vmcs_cpu(int cpu)
 	struct page *pages;
 	struct vmcs *vmcs;
 
-	// 分配一个页来保存vm和vmm信息
+	// 通过buddy分配页
 	pages = __alloc_pages_node(node, GFP_KERNEL, vmcs_config.order);
 	if (!pages)
 		return NULL;
+	// 得到页(page frame)对应的虚拟地址
 	vmcs = page_address(pages);
 	memset(vmcs, 0, vmcs_config.size);
+	// 设置修订版本
 	vmcs->revision_id = vmcs_config.revision_id; /* vmcs revision id */
 	return vmcs;
 }
@@ -5005,7 +5026,7 @@ static void ept_set_mmio_spte_mask(void)
 /*
  * Sets up the vmcs for emulated real mode.
  */
-// 初始化vmcs内容
+// 设置vmcs内容
 static int vmx_vcpu_setup(struct vcpu_vmx *vmx)
 {
 #ifdef CONFIG_X86_64
@@ -7219,6 +7240,7 @@ enum vmcs_field_type {
 	VMCS_FIELD_TYPE_NATURAL_WIDTH = 3
 };
 
+// 判断field类型(长度)
 static inline int vmcs_field_type(unsigned long field)
 {
 	if (0x1 & field)	/* the *_HIGH fields are all 32 bit */
@@ -9086,15 +9108,17 @@ static void vmx_free_vcpu(struct kvm_vcpu *vcpu)
 static struct kvm_vcpu *vmx_create_vcpu(struct kvm *kvm, unsigned int id)
 {
 	int err;
+	// 分配vcpu运行环境结构的内存
 	struct vcpu_vmx *vmx = kmem_cache_zalloc(kvm_vcpu_cache, GFP_KERNEL);
 	int cpu;
 
 	if (!vmx)
 		return ERR_PTR(-ENOMEM);
 
+	// 分配vpid(Virtual-Processor Identifier)，用于唯一标识vCPU
 	vmx->vpid = allocate_vpid();
 
-	// 初始化vcpu
+	// 初始化vcpu结构
 	err = kvm_vcpu_init(&vmx->vcpu, kvm, id);
 	if (err)
 		goto free_vcpu;
@@ -9107,13 +9131,14 @@ static struct kvm_vcpu *vmx_create_vcpu(struct kvm *kvm, unsigned int id)
 	 * avoiding dealing with cases, such as enabling PML partially on vcpus
 	 * for the guest, etc.
 	 */
+	// 为Page Modification Logging分配page
 	if (enable_pml) {
 		vmx->pml_pg = alloc_page(GFP_KERNEL | __GFP_ZERO);
 		if (!vmx->pml_pg)
 			goto uninit_vcpu;
 	}
 
-	// 分配得到一个page
+	// 为MSR分配page
 	vmx->guest_msrs = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	BUILD_BUG_ON(ARRAY_SIZE(vmx_msr_index) * sizeof(vmx->guest_msrs[0])
 		     > PAGE_SIZE);
@@ -9121,26 +9146,30 @@ static struct kvm_vcpu *vmx_create_vcpu(struct kvm *kvm, unsigned int id)
 	if (!vmx->guest_msrs)
 		goto free_pml;
 
-	// vmcs01?
+	// 设置vmx->loaded_vmcs指向loaded_vmcs(描述vcpu当前加载的VMCS的结构)
 	vmx->loaded_vmcs = &vmx->vmcs01;
 	// 为vcpu创建vmcs，并设置到loaded_vmcs中
 	vmx->loaded_vmcs->vmcs = alloc_vmcs();
 	if (!vmx->loaded_vmcs->vmcs)
 		goto free_msrs;
+	// vmm_exclusive为0表示严格模式，即只有需要做VMX operation时才进入到VMX模式，否则一直保持在普通模式下
 	if (!vmm_exclusive)
-		// 进入vmx模式
+		// 进入VMX operation模式
 		kvm_cpu_vmxon(__pa(per_cpu(vmxarea, raw_smp_processor_id())));
 	// 初始化loaded_vmcs
 	loaded_vmcs_init(vmx->loaded_vmcs);
 	if (!vmm_exclusive)
-		// 退出vmx模式
+		// 退出VMX operation模式
 		kvm_cpu_vmxoff();
 
+	// 关闭抢占，获取当前的pcpu id
 	cpu = get_cpu();
+	// 让cpu加载vcpu
 	vmx_vcpu_load(&vmx->vcpu, cpu);
 	vmx->vcpu.cpu = cpu;
 	err = vmx_vcpu_setup(vmx);
 	vmx_vcpu_put(&vmx->vcpu);
+	// 开启抢占
 	put_cpu();
 	if (err)
 		goto free_vmcs;
@@ -9161,7 +9190,7 @@ static struct kvm_vcpu *vmx_create_vcpu(struct kvm *kvm, unsigned int id)
 
 	if (nested) {
 		nested_vmx_setup_ctls_msrs(vmx);
-		vmx->nested.vpid02 = allocate_vpid();
+
 	}
 
 	vmx->nested.posted_intr_nv = -1;

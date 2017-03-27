@@ -111,6 +111,7 @@
 #define VMX_MISC_ACTIVITY_HLT			0x00000040
 
 /* VMCS Encodings */
+// VMCS中各字段的ID
 enum vmcs_field {
 	VIRTUAL_PROCESSOR_ID            = 0x00000000,
 	POSTED_INTR_NV                  = 0x00000002,
