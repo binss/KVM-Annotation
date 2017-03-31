@@ -142,10 +142,14 @@ int vcpu_load(struct kvm_vcpu *vcpu)
 
 	if (mutex_lock_killable(&vcpu->mutex))
 		return -EINTR;
+	// 关闭抢占
 	cpu = get_cpu();
+	// 注册preempt notifier，当发生内核抢占时会调用回调函数进行处理 kvm_sched_in (被调度之前)和 kvm_sched_out (被抢占之后)
+	// 这样比每次执行修改VMCS都要关闭抢占性能好
 	preempt_notifier_register(&vcpu->preempt_notifier);
-	// 特定架构
+	// 将vCPU绑定的pCPU上
 	kvm_arch_vcpu_load(vcpu, cpu);
+	// 重新打开抢占
 	put_cpu();
 	return 0;
 }
@@ -154,7 +158,9 @@ EXPORT_SYMBOL_GPL(vcpu_load);
 void vcpu_put(struct kvm_vcpu *vcpu)
 {
 	preempt_disable();
+	// 把当前vCPU从pCPU解下来
 	kvm_arch_vcpu_put(vcpu);
+	// 取消已注册的preempt notifier
 	preempt_notifier_unregister(&vcpu->preempt_notifier);
 	preempt_enable();
 	mutex_unlock(&vcpu->mutex);
@@ -229,13 +235,14 @@ void kvm_reload_remote_mmus(struct kvm *kvm)
 	kvm_make_all_cpus_request(kvm, KVM_REQ_MMU_RELOAD);
 }
 
+// 初始化vcpu
 int kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
 {
 	struct page *page;
 	int r;
 
-	mutex_init(&vcpu->mutex);
-	vcpu->cpu = -1;
+	mutex_init(&vcpu->mutex);	// 加锁
+	vcpu->cpu = -1;				// 当前未有pcpu指向之
 	vcpu->kvm = kvm;
 	vcpu->vcpu_id = id;
 	vcpu->pid = NULL;
@@ -250,11 +257,11 @@ int kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
 		r = -ENOMEM;
 		goto fail;
 	}
-	vcpu->run = page_address(page);
+	vcpu->run = page_address(page);	// 设置run结构的page，之后会被映射到qemu
 
 	kvm_vcpu_set_in_spin_loop(vcpu, false);
 	kvm_vcpu_set_dy_eligible(vcpu, false);
-	vcpu->preempted = false;
+	vcpu->preempted = false;		// 非抢占
 
 	r = kvm_arch_vcpu_init(vcpu);
 	if (r < 0)
@@ -509,6 +516,7 @@ static struct kvm_memslots *kvm_alloc_memslots(void)
 	 * code of handling generation number wrap-around.
 	 */
 	slots->generation = -150;
+	// 初始化slot的编号
 	for (i = 0; i < KVM_MEM_SLOTS_NUM; i++)
 		slots->id_to_index[i] = slots->memslots[i].id = i;
 
@@ -606,13 +614,13 @@ static int kvm_create_vm_debugfs(struct kvm *kvm, int fd)
 static struct kvm *kvm_create_vm(unsigned long type)
 {
 	int r, i;
-	struct kvm *kvm = kvm_arch_alloc_vm();
+	struct kvm *kvm = kvm_arch_alloc_vm();	// 分配内存
 
 	if (!kvm)
 		return ERR_PTR(-ENOMEM);
 
 	spin_lock_init(&kvm->mmu_lock);
-	atomic_inc(&current->mm->mm_count);
+	atomic_inc(&current->mm->mm_count);		// 引用数+1
 	kvm->mm = current->mm;
 	kvm_eventfd_init(kvm);
 	mutex_init(&kvm->lock);
@@ -636,6 +644,7 @@ static struct kvm *kvm_create_vm(unsigned long type)
 	BUILD_BUG_ON(KVM_MEM_SLOTS_NUM > SHRT_MAX);
 
 	r = -ENOMEM;
+	// 初始化slot结构
 	for (i = 0; i < KVM_ADDRESS_SPACE_NUM; i++) {
 		kvm->memslots[i] = kvm_alloc_memslots();
 		if (!kvm->memslots[i])
@@ -657,6 +666,7 @@ static struct kvm *kvm_create_vm(unsigned long type)
 	if (r)
 		goto out_err;
 
+	// 将当前vm加入到vm_list，需要保护原子性
 	spin_lock(&kvm_lock);
 	list_add(&kvm->vm_list, &vm_list);
 	spin_unlock(&kvm_lock);
@@ -2455,7 +2465,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 		r = PTR_ERR(vcpu);
 		goto vcpu_decrement;
 	}
-
+	// 初始化vcpu中的preempt notifier结构，用于在被抢占时进行通知
 	preempt_notifier_init(&vcpu->preempt_notifier, &kvm_preempt_ops);
 
 	// 设置vcpu
@@ -2473,7 +2483,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 
 	/* Now it's all set up, let userspace reach it */
 	kvm_get_kvm(kvm);
-	// 获得vcpu的fd，返回之(给qemu)
+	// 获得vcpu的fd，返回之(给qemu)，方便以后进行操作
 	r = create_vcpu_fd(vcpu);
 	if (r < 0) {
 		kvm_put_kvm(kvm);
@@ -3158,7 +3168,7 @@ out:
 
 static struct file_operations kvm_vm_fops = {
 	.release        = kvm_vm_release,
-	.unlocked_ioctl = kvm_vm_ioctl,
+	.unlocked_ioctl = kvm_vm_ioctl,		// 关键，QEMU以此操纵VM
 #ifdef CONFIG_KVM_COMPAT
 	.compat_ioctl   = kvm_vm_compat_ioctl,
 #endif
@@ -3186,6 +3196,7 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 		kvm_put_kvm(kvm);
 		return r;
 	}
+	// 创建名为kvm-vm的文件，提供kvm_vm_fops中声明的操作
 	file = anon_inode_getfile("kvm-vm", &kvm_vm_fops, kvm, O_RDWR);
 	if (IS_ERR(file)) {
 		put_unused_fd(r);
@@ -3198,7 +3209,7 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
 		fput(file);
 		return -ENOMEM;
 	}
-
+	// 将fd和file结构绑定(将当前进程PCB的files_struct->fd数组的fd位置设置为file)
 	fd_install(r, file);
 	return r;
 }

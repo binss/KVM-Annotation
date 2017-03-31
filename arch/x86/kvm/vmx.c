@@ -9132,13 +9132,15 @@ static struct kvm_vcpu *vmx_create_vcpu(struct kvm *kvm, unsigned int id)
 	 * for the guest, etc.
 	 */
 	// 为Page Modification Logging分配page
+	// PML是在用于记录哪些page被标记为dirty的内存区域
+	// http://www.intel.com/content/dam/www/public/us/en/documents/white-papers/page-modification-logging-vmm-white-paper.pdf
 	if (enable_pml) {
 		vmx->pml_pg = alloc_page(GFP_KERNEL | __GFP_ZERO);
 		if (!vmx->pml_pg)
 			goto uninit_vcpu;
 	}
 
-	// 为MSR分配page
+	// 为guest MSR分配内存
 	vmx->guest_msrs = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	BUILD_BUG_ON(ARRAY_SIZE(vmx_msr_index) * sizeof(vmx->guest_msrs[0])
 		     > PAGE_SIZE);
@@ -9167,27 +9169,31 @@ static struct kvm_vcpu *vmx_create_vcpu(struct kvm *kvm, unsigned int id)
 	// 让cpu加载vcpu
 	vmx_vcpu_load(&vmx->vcpu, cpu);
 	vmx->vcpu.cpu = cpu;
+	// 初始化vcpu，主要是通过VMWRITE设置vmcs内容
 	err = vmx_vcpu_setup(vmx);
+	// 加载host状态，相当于vmx_vcpu_load的反操作
 	vmx_vcpu_put(&vmx->vcpu);
 	// 开启抢占
 	put_cpu();
 	if (err)
 		goto free_vmcs;
+	// APIC???
 	if (cpu_need_virtualize_apic_accesses(&vmx->vcpu)) {
 		err = alloc_apic_access_page(kvm);
 		if (err)
 			goto free_vmcs;
 	}
-
+	// 如果支持ept
 	if (enable_ept) {
 		if (!kvm->arch.ept_identity_map_addr)
 			kvm->arch.ept_identity_map_addr =
 				VMX_EPT_IDENTITY_PAGETABLE_ADDR;
+		// 初始化identity页表???
 		err = init_rmode_identity_map(kvm);
 		if (err)
 			goto free_vmcs;
 	}
-
+	// 嵌套虚拟化相关初始化
 	if (nested) {
 		nested_vmx_setup_ctls_msrs(vmx);
 

@@ -1165,6 +1165,7 @@ void kvm_set_pending_timer(struct kvm_vcpu *vcpu)
 	kvm_make_request(KVM_REQ_PENDING_TIMER, vcpu);
 }
 
+// 获取VM启动时间，写入到wall_clock中
 static void kvm_write_wall_clock(struct kvm *kvm, gpa_t wall_clock)
 {
 	int version;
@@ -1193,8 +1194,10 @@ static void kvm_write_wall_clock(struct kvm *kvm, gpa_t wall_clock)
 	 * wall clock specified here.  guest system time equals host
 	 * system time for us, thus we must fill in host boot time here.
 	 */
+	// 获取host启动的绝对时间
 	getboottime64(&boot);
 
+	// kvmclock_offset为host启动后到VM启动的相对时间(负数)，用host启动时间减去它(相等于加)得到VM启动的绝对时间
 	if (kvm->arch.kvmclock_offset) {
 		struct timespec64 ts = ns_to_timespec64(kvm->arch.kvmclock_offset);
 		boot = timespec64_sub(boot, ts);
@@ -1203,6 +1206,7 @@ static void kvm_write_wall_clock(struct kvm *kvm, gpa_t wall_clock)
 	wc.nsec = boot.tv_nsec;
 	wc.version = version;
 
+	// 更新时间
 	kvm_write_guest(kvm, wall_clock, &wc, sizeof(wc));
 
 	version++;
@@ -1387,11 +1391,13 @@ static inline u64 __scale_tsc(u64 ratio, u64 tsc)
 	return mul_u64_u64_shr(tsc, ratio, kvm_tsc_scaling_ratio_frac_bits);
 }
 
+// 将tsc乘上一个ratio
 u64 kvm_scale_tsc(struct kvm_vcpu *vcpu, u64 tsc)
 {
 	u64 _tsc = tsc;
-	u64 ratio = vcpu->arch.tsc_scaling_ratio;
 
+	u64 ratio = vcpu->arch.tsc_scaling_ratio;
+	// 如果比例不是默认值，要重新算tsc
 	if (ratio != kvm_default_tsc_scaling_ratio)
 		_tsc = __scale_tsc(ratio, tsc);
 
@@ -1404,7 +1410,7 @@ static u64 kvm_compute_tsc_offset(struct kvm_vcpu *vcpu, u64 target_tsc)
 	u64 tsc;
 
 	tsc = kvm_scale_tsc(vcpu, rdtsc());
-
+	// 返回乘上倍数后和原始值的差
 	return target_tsc - tsc;
 }
 
@@ -1425,15 +1431,20 @@ void kvm_write_tsc(struct kvm_vcpu *vcpu, struct msr_data *msr)
 	u64 data = msr->data;
 
 	raw_spin_lock_irqsave(&kvm->arch.tsc_write_lock, flags);
+	// 计算要设置的延迟量
 	offset = kvm_compute_tsc_offset(vcpu, data);
+	// get_kernel_ns => ktime_get_boot_ns => ktime_get_boottime 获取系统启动以来度过的时间(ns)
 	ns = get_kernel_ns();
+	// 减去上次调用时记录的ns变量，算出相对于上次启动过去的时间
 	elapsed = ns - kvm->arch.last_tsc_nsec;
 
 	if (vcpu->arch.virtual_tsc_khz) {
 		int faulted = 0;
 
 		/* n.b - signed multiplication and division required */
+		// 计算在guest中过去的时间
 		usdiff = data - kvm->arch.last_tsc_write;
+		// ???
 #ifdef CONFIG_X86_64
 		usdiff = (usdiff * 1000) / vcpu->arch.virtual_tsc_khz;
 #else
@@ -1453,7 +1464,9 @@ void kvm_write_tsc(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		: "A"(usdiff * 1000), [divisor] "rm"(vcpu->arch.virtual_tsc_khz));
 
 #endif
+		// us
 		do_div(elapsed, 1000);
+		// host中过去的时间减去guest中过去的时间，得到偏差值
 		usdiff -= elapsed;
 		if (usdiff < 0)
 			usdiff = -usdiff;
@@ -1474,6 +1487,7 @@ void kvm_write_tsc(struct kvm_vcpu *vcpu, struct msr_data *msr)
 	 * compensation code attempt to catch up if we fall behind, but
 	 * it's better to try to match offsets from the beginning.
          */
+	// 对偏移量offset进行调整
 	if (usdiff < USEC_PER_SEC &&
 	    vcpu->arch.virtual_tsc_khz == kvm->arch.last_tsc_khz) {
 		if (!check_tsc_unstable()) {
@@ -1498,6 +1512,7 @@ void kvm_write_tsc(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		 * These values are tracked in kvm->arch.cur_xxx variables.
 		 */
 		kvm->arch.cur_tsc_generation++;
+		// 保存ns变量，下次调用该函数时用来算offset
 		kvm->arch.cur_tsc_nsec = ns;
 		kvm->arch.cur_tsc_write = data;
 		kvm->arch.cur_tsc_offset = offset;
@@ -1745,6 +1760,7 @@ static int kvm_guest_time_update(struct kvm_vcpu *v)
 
 	/* Keep irq disabled to prevent changes to the clock */
 	local_irq_save(flags);
+	// 获取host中tsc与TSC时钟1KHZ的比例
 	tgt_tsc_khz = __this_cpu_read(cpu_tsc_khz);
 	if (unlikely(tgt_tsc_khz == 0)) {
 		local_irq_restore(flags);
@@ -1755,7 +1771,7 @@ static int kvm_guest_time_update(struct kvm_vcpu *v)
 		host_tsc = rdtsc();
 		kernel_ns = get_kernel_ns();
 	}
-
+	// 获取取guest中当前tsc
 	tsc_timestamp = kvm_read_l1_tsc(v, host_tsc);
 
 	/*
@@ -1782,17 +1798,22 @@ static int kvm_guest_time_update(struct kvm_vcpu *v)
 		return 0;
 
 	if (kvm_has_tsc_control)
+		// 将1KHZ TSC转换成guest TSC
 		tgt_tsc_khz = kvm_scale_tsc(v, tgt_tsc_khz);
 
+	// 如果当前guest时钟的频率不同，则更新转换比例
 	if (unlikely(vcpu->hw_tsc_khz != tgt_tsc_khz)) {
 		kvm_get_time_scale(NSEC_PER_SEC, tgt_tsc_khz * 1000LL,
 				   &vcpu->hv_clock.tsc_shift,
 				   &vcpu->hv_clock.tsc_to_system_mul);
+		// 设置转换后的值
 		vcpu->hw_tsc_khz = tgt_tsc_khz;
 	}
 
 	/* With all the info we got, fill in the values */
+	// 当前kvmclock下的TSC值
 	vcpu->hv_clock.tsc_timestamp = tsc_timestamp;
+	// 当前kvmclock下的guest了多少ns
 	vcpu->hv_clock.system_time = kernel_ns + v->kvm->arch.kvmclock_offset;
 	vcpu->last_guest_tsc = tsc_timestamp;
 
@@ -2011,6 +2032,7 @@ static void record_steal_time(struct kvm_vcpu *vcpu)
 	if (!(vcpu->arch.st.msr_val & KVM_MSR_ENABLED))
 		return;
 
+	// 读取guest内存中(需要进行内存转换)的steal time到vcpu->arch.st.steal中
 	if (unlikely(kvm_read_guest_cached(vcpu->kvm, &vcpu->arch.st.stime,
 		&vcpu->arch.st.steal, sizeof(struct kvm_steal_time))))
 		return;
@@ -2020,15 +2042,18 @@ static void record_steal_time(struct kvm_vcpu *vcpu)
 
 	vcpu->arch.st.steal.version += 1;
 
+	// 更新guset的steal time的版本
 	kvm_write_guest_cached(vcpu->kvm, &vcpu->arch.st.stime,
 		&vcpu->arch.st.steal, sizeof(struct kvm_steal_time));
 
 	smp_wmb();
-
+	// 计算steal time，加上 当前(enter guest)在guest中运行的时间(run_delay) - 上次enter guest时记录的run_delay
 	vcpu->arch.st.steal.steal += current->sched_info.run_delay -
 		vcpu->arch.st.last_steal;
+	// 设置last_steal为当前run_delay
 	vcpu->arch.st.last_steal = current->sched_info.run_delay;
 
+	// 再更新steal time的值
 	kvm_write_guest_cached(vcpu->kvm, &vcpu->arch.st.stime,
 		&vcpu->arch.st.steal, sizeof(struct kvm_steal_time));
 
@@ -2036,6 +2061,7 @@ static void record_steal_time(struct kvm_vcpu *vcpu)
 
 	vcpu->arch.st.steal.version += 1;
 
+	// 再次更新版本
 	kvm_write_guest_cached(vcpu->kvm, &vcpu->arch.st.stime,
 		&vcpu->arch.st.steal, sizeof(struct kvm_steal_time));
 }
@@ -2115,7 +2141,9 @@ int kvm_set_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 		break;
 	case MSR_KVM_WALL_CLOCK_NEW:
 	case MSR_KVM_WALL_CLOCK:
+		// 设置为pvclock_wall_clock的地址
 		vcpu->kvm->arch.wall_clock = data;
+		// 填充wall_clock
 		kvm_write_wall_clock(vcpu->kvm, data);
 		break;
 	case MSR_KVM_SYSTEM_TIME_NEW:
@@ -2134,7 +2162,7 @@ int kvm_set_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 
 			ka->boot_vcpu_runs_old_kvmclock = tmp;
 		}
-
+		// 设置为pvclock_vsyscall_time_info的地址
 		vcpu->arch.time = data;
 		kvm_make_request(KVM_REQ_GLOBAL_CLOCK_UPDATE, vcpu);
 
@@ -2734,15 +2762,21 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 	kvm_x86_ops->vcpu_load(vcpu, cpu);
 
 	/* Apply any externally detected TSC adjustments (due to suspend) */
+	// 调整TSC，加上tsc_offset_adjustment
 	if (unlikely(vcpu->arch.tsc_offset_adjustment)) {
 		adjust_tsc_offset_host(vcpu, vcpu->arch.tsc_offset_adjustment);
 		vcpu->arch.tsc_offset_adjustment = 0;
 		kvm_make_request(KVM_REQ_CLOCK_UPDATE, vcpu);
 	}
 
+	// 如果换了CPU(不太可能) 或 TSC不否稳定
 	if (unlikely(vcpu->cpu != cpu) || check_tsc_unstable()) {
+		// 让VM中的时钟跟上host的时钟
+		// sets the TSC to catchup mode. it catchup VCPU to real time, but cannot guarantee that they stay in perfect synchronization.
+		// 差距为 当前时间 - 上次kvm_arch_vcpu_setup时保存的时间
 		s64 tsc_delta = !vcpu->arch.last_host_tsc ? 0 :
 				rdtsc() - vcpu->arch.last_host_tsc;
+		// 如果发生了TSC backwards，可能是TSC被reset了
 		if (tsc_delta < 0)
 			mark_tsc_unstable("KVM discovered backwards TSC");
 
@@ -2766,7 +2800,9 @@ void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 			kvm_migrate_timers(vcpu);
 		vcpu->cpu = cpu;
 	}
-
+	// steal time机制
+	// 设置requests中的steal time bit
+	// 在 vcpu_enter_guest 时，用vcpu->arch.st去更新guest内存中的steal time结构，让其感知到VMM抢了它的运行时间
 	kvm_make_request(KVM_REQ_STEAL_UPDATE, vcpu);
 }
 
@@ -7401,53 +7437,57 @@ struct kvm_vcpu *kvm_arch_vcpu_create(struct kvm *kvm,
 						unsigned int id)
 {
 	struct kvm_vcpu *vcpu;
-
+	// 如果TSC不稳定，但有可用vcpu(online)，输出错误但继续
 	if (check_tsc_unstable() && atomic_read(&kvm->online_vcpus) != 0)
 		printk_once(KERN_WARNING
 		"kvm: SMP vm created on host with unstable TSC; "
 		"guest TSC will not be reliable\n");
 
-	// 根据硬件创建vcpu，调用vmx_create_vcpu
+	// 根据平台创建vcpu，调用 vmx_create_vcpu
 	vcpu = kvm_x86_ops->vcpu_create(kvm, id);
 
 	return vcpu;
 }
 
-// 根据架构设置vcpu
+// 根据架构设置kvm_vcpu
 int kvm_arch_vcpu_setup(struct kvm_vcpu *vcpu)
 {
 	int r;
-
+	// 初始化kvm_mtrr(memory type range register)???
+	//
 	kvm_vcpu_mtrr_init(vcpu);
-	// kvm_main.c
-	// 切换vcpu?
+	// 切换vcpu
 	r = vcpu_load(vcpu);
 	if (r)
 		return r;
+	// 重设kvm_vcpu，包括VMCS
 	kvm_vcpu_reset(vcpu, false);
+	// 初始化MMU
 	kvm_mmu_setup(vcpu);
 	vcpu_put(vcpu);
 	return r;
 }
 
-//
 void kvm_arch_vcpu_postcreate(struct kvm_vcpu *vcpu)
 {
 	struct msr_data msr;
 	struct kvm *kvm = vcpu->kvm;
-	// 重新vcpu_load
+	// 再次重新加载vcpu
 	if (vcpu_load(vcpu))
 		return;
-	// 写msr，tsc
+
 	msr.data = 0x0;
 	msr.index = MSR_IA32_TSC;
 	msr.host_initiated = true;
+	// 更新TSC
 	kvm_write_tsc(vcpu, &msr);
 	vcpu_put(vcpu);
 
 	if (!kvmclock_periodic_sync)
 		return;
 
+	// 如果开启了kvmclock_periodic_sync(默认)
+	// 延迟(300 * HZ)后调用 kvmclock_sync_fn
 	schedule_delayed_work(&kvm->arch.kvmclock_sync_work,
 					KVMCLOCK_SYNC_PERIOD);
 }
@@ -7529,6 +7569,7 @@ int kvm_arch_hardware_enable(void)
 	bool stable, backwards_tsc = false;
 
 	kvm_shared_msr_cpu_online();
+	// ???
 	ret = kvm_x86_ops->hardware_enable();
 	if (ret != 0)
 		return ret;
@@ -7693,12 +7734,12 @@ int kvm_arch_vcpu_init(struct kvm_vcpu *vcpu)
 
 	kvm_set_tsc_khz(vcpu, max_tsc_khz);
 
-	r = kvm_mmu_create(vcpu);
+	r = kvm_mmu_create(vcpu);			// 初始化MMU???
 	if (r < 0)
 		goto fail_free_pio_data;
 
 	if (irqchip_in_kernel(kvm)) {
-		r = kvm_create_lapic(vcpu);
+		r = kvm_create_lapic(vcpu);		// 初始化lapic
 		if (r < 0)
 			goto fail_mmu_destroy;
 	} else
@@ -7730,7 +7771,7 @@ int kvm_arch_vcpu_init(struct kvm_vcpu *vcpu)
 	vcpu->arch.pat = MSR_IA32_CR_PAT_DEFAULT;
 
 	kvm_async_pf_hash_reset(vcpu);
-	kvm_pmu_init(vcpu);
+	kvm_pmu_init(vcpu);					// ???
 
 	vcpu->arch.pending_external_vector = -1;
 
@@ -7794,6 +7835,7 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 
 	pvclock_update_vm_gtod_copy(kvm);
 
+	// 初始化延迟工作的结构，绑定要延迟执行的函数
 	INIT_DELAYED_WORK(&kvm->arch.kvmclock_update_work, kvmclock_update_fn);
 	INIT_DELAYED_WORK(&kvm->arch.kvmclock_sync_work, kvmclock_sync_fn);
 
