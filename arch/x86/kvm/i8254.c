@@ -200,6 +200,7 @@ static inline struct kvm_pit *pit_state_to_pit(struct kvm_kpit_state *ps)
 	return container_of(ps, struct kvm_pit, pit_state);
 }
 
+// 中断ack应答虚拟化
 static void kvm_pit_ack_irq(struct kvm_irq_ack_notifier *kian)
 {
 	struct kvm_kpit_state *ps = container_of(kian, struct kvm_kpit_state,
@@ -211,7 +212,9 @@ static void kvm_pit_ack_irq(struct kvm_irq_ack_notifier *kian)
 	 * inc(pending) in pit_timer_fn and xchg(irq_ack, 0) in pit_do_work.
 	 */
 	smp_mb();
+	// 如果pending>0，注入积累的中断
 	if (atomic_dec_if_positive(&ps->pending) > 0)
+		// 将work(pit->expired)添加到worker(pit->worker)的work_list
 		queue_kthread_work(&pit->worker, &pit->expired);
 }
 
@@ -247,6 +250,7 @@ static void pit_do_work(struct kthread_work *work)
 	if (atomic_read(&ps->reinject) && !atomic_xchg(&ps->irq_ack, 0))
 		return;
 
+	// 模拟一个高电平和一个低电平，发送给PIC，触发时钟中断
 	kvm_set_irq(kvm, pit->irq_source_id, 0, 1, false);
 	kvm_set_irq(kvm, pit->irq_source_id, 0, 0, false);
 
@@ -264,16 +268,18 @@ static void pit_do_work(struct kthread_work *work)
 			kvm_apic_nmi_wd_deliver(vcpu);
 }
 
+// 时钟累加
 static enum hrtimer_restart pit_timer_fn(struct hrtimer *data)
 {
 	struct kvm_kpit_state *ps = container_of(data, struct kvm_kpit_state, timer);
 	struct kvm_pit *pt = pit_state_to_pit(ps);
 
+	// 如果时钟中断需要重新注入，累加到pending
 	if (atomic_read(&ps->reinject))
 		atomic_inc(&ps->pending);
 
 	queue_kthread_work(&pt->worker, &pt->expired);
-
+    // 如果定时器周期触发，则再次启动定时器，否则销毁
 	if (ps->is_periodic) {
 		hrtimer_add_expires_ns(&ps->timer, ps->period);
 		return HRTIMER_RESTART;
@@ -373,6 +379,7 @@ static void pit_load_count(struct kvm_pit *pit, int channel, u32 val)
 
 	/* Two types of timer
 	 * mode 1 is one shot, mode 2 is period, otherwise del timer */
+	// 创建pit timer
 	switch (ps->channels[0].mode) {
 	case 0:
 	case 1:
@@ -645,6 +652,7 @@ static const struct kvm_io_device_ops speaker_dev_ops = {
 	.write    = speaker_ioport_write,
 };
 
+// 创建PIT(8254)时钟
 struct kvm_pit *kvm_create_pit(struct kvm *kvm, u32 flags)
 {
 	struct kvm_pit *pit;
@@ -663,25 +671,37 @@ struct kvm_pit *kvm_create_pit(struct kvm *kvm, u32 flags)
 
 	mutex_init(&pit->pit_state.lock);
 
+	// 分配一个pid
 	pid = get_pid(task_tgid(current));
+	// 获取pid所属命名空间所看到的局部pid
 	pid_nr = pid_vnr(pid);
 	put_pid(pid);
 
+	// 初始化worker
 	init_kthread_worker(&pit->worker);
+	// 创建并唤醒内核线程
+	// kthread_run(threadfn, data, namefmt, ...)
+	// @threadfn: the function to run until signal_pending(current). 入口函数
+	// @data: data ptr for @threadfn.	参数
+	// @namefmt: printf-style name for the thread.  线程名称
 	pit->worker_task = kthread_run(kthread_worker_fn, &pit->worker,
 				       "kvm-pit/%d", pid_nr);
 	if (IS_ERR(pit->worker_task))
 		goto fail_kthread;
 
+	// 初始化work(pit->expired)，设置work处理函数
 	init_kthread_work(&pit->expired, pit_do_work);
 
 	pit->kvm = kvm;
 
 	pit_state = &pit->pit_state;
+	// 初始化高精度定时器，作为虚拟时钟(pit_state->timer)中断的触发源
 	hrtimer_init(&pit_state->timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	// 设置累加时钟的函数
 	pit_state->timer.function = pit_timer_fn;
 
 	pit_state->irq_ack_notifier.gsi = 0;
+	// 时钟中断模拟ack
 	pit_state->irq_ack_notifier.irq_acked = kvm_pit_ack_irq;
 	pit->mask_notifier.func = pit_mask_notifer;
 
@@ -690,6 +710,7 @@ struct kvm_pit *kvm_create_pit(struct kvm *kvm, u32 flags)
 	kvm_pit_set_reinject(pit, true);
 
 	mutex_lock(&kvm->slots_lock);
+	// 注册IO虚拟化操作
 	kvm_iodevice_init(&pit->dev, &pit_dev_ops);
 	ret = kvm_io_bus_register_dev(kvm, KVM_PIO_BUS, KVM_PIT_BASE_ADDRESS,
 				      KVM_PIT_MEM_LENGTH, &pit->dev);
